@@ -1,0 +1,22 @@
+# Ignore Rust build artifacts and dependencies
+/target/
+**/*.rs.bk
+
+# Ignore Cargo’s local files (but not configs)
+/Cargo.lock
+
+# Ignore coverage/debug/test results
+/coverage/
+*.profraw
+
+# IDEs/editors
+.idea/
+*.iml
+.vscode/
+*.sw?
+.DS_Store
+
+# Backup files
+*~
+*.swp
+*.swo
