@@ -6,9 +6,4 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 nostr-sdk = "0.43"
-prost = "0.14.1"
-tonic = "0.14.2"
-tonic-prost = "0.14.2"
-
-[build-dependencies]
-tonic-prost-build = "0.14.2"
+lnd_grpc_rust = "2.12.0"
