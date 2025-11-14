@@ -7,6 +7,8 @@ mod uri_config;
 
 use uri_config::{create_and_save, load_and_display, remove_and_save};
 
+use crate::grpc::display_lnd_info;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = cli().get_matches();
@@ -14,6 +16,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match matches.subcommand() {
         Some(("deamon", _)) => {
             println!("Starting deamon");
+        }
+        Some(("lnd", sub_matches)) => {
+            let command = sub_matches.subcommand().unwrap_or(("", sub_matches));
+            match command {
+                ("info", _) => {
+                    display_lnd_info().await;
+                }
+                (name, _) => {
+                    unreachable!("Unsupported subcommand `{name}`")
+                }
+            }
         }
         Some(("uri", sub_matches)) => {
             let command = sub_matches.subcommand().unwrap_or(("", sub_matches));
@@ -63,6 +76,12 @@ fn cli() -> Command {
         .arg_required_else_help(true)
         .allow_external_subcommands(true)
         .subcommand(Command::new("deamon").about("Starts the deamon"))
+        .subcommand(
+            Command::new("lnd")
+                .args_conflicts_with_subcommands(true)
+                .flatten_help(true)
+                .subcommand(Command::new("info")),
+        )
         .subcommand(
             Command::new("uri")
                 .args_conflicts_with_subcommands(true)

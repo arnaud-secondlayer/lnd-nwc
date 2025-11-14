@@ -1,7 +1,12 @@
 use std::fs;
 use lnd_grpc_rust;
 
-pub async fn get_info() -> Result<lnd_grpc_rust::lnrpc::GetInfoResponse, Box<dyn std::error::Error>> {
+pub async fn display_lnd_info() {
+    let info =  get_info().await.unwrap();
+    println!("{:?}", info);
+}
+
+async fn get_info() -> Result<lnd_grpc_rust::lnrpc::GetInfoResponse, Box<dyn std::error::Error>> {
     let cert_bytes = fs::read("tls.cert").expect("FailedToReadTlsCertFile");
     let mac_bytes = fs::read("admin.macaroon").expect("FailedToReadMacaroonFile");
 
