@@ -3,8 +3,9 @@ use clap::{Arg, Command};
 mod config;
 mod grpc;
 mod uri;
+mod uri_config;
 
-use uri::{create_and_save, remove_and_save, load_and_display};
+use uri_config::{create_and_save, load_and_display, remove_and_save};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
