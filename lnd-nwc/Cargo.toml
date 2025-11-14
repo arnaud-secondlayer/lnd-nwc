@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-nostr-sdk = "0.43"
+clap = { version = "4.5.51", features = ["derive"] }
+confy = "2.0.0"
+dirs = "6.0.0"
+hex = "0.4.3"
 lnd_grpc_rust = "2.12.0"
+nostr-sdk = "0.43"
+secp256k1 = { version = "0.28.1", features = ["rand-std"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+urlencoding = "2.1.3"
