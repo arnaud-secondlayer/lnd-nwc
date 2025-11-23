@@ -1,12 +1,25 @@
 use confy;
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct NostrConfig {
+    pub secret: String,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct LndConfig {
+    pub uri: String,
+    pub cert_file: PathBuf,
+    pub macaroon_file: PathBuf,
+}
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub secret_key: String,
+    pub nostr: NostrConfig,
     pub uris: HashMap<String, String>,
+    pub lnd: LndConfig,
 }
 
 // Config is stored in

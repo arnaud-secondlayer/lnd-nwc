@@ -2,12 +2,14 @@ use clap::{Arg, Command};
 
 mod config;
 mod lnd;
+mod lnd_config;
 mod nostr;
 mod nostr_config;
 mod uri;
 mod uri_config;
 
 use lnd::lnd_display_info;
+use lnd_config::store_lnd_config;
 use nostr::start_deamon;
 use nostr_config::load_or_generate_keys;
 use uri_config::{create_and_save, load_and_display, remove_and_save};
@@ -26,6 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match command {
                 ("info", _) => {
                     lnd_display_info().await;
+                }
+                ("set", sub_matches) => {
+                    store_lnd_config(
+                        sub_matches.get_one::<String>("cert").unwrap(),
+                        sub_matches.get_one::<String>("macaroon").unwrap(),
+                        sub_matches.get_one::<String>("uri").unwrap(),
+                    );
                 }
                 (name, _) => {
                     unreachable!("Unsupported subcommand `{name}`")
@@ -80,7 +89,28 @@ fn cli() -> Command {
             Command::new("lnd")
                 .args_conflicts_with_subcommands(true)
                 .flatten_help(true)
-                .subcommand(Command::new("info")),
+                .subcommand(Command::new("info"))
+                .subcommand(
+                    Command::new("set")
+                        .arg(
+                            Arg::new("cert")
+                                .short('c')
+                                .help("path to the certificate file")
+                                .required(true),
+                        )
+                        .arg(
+                            Arg::new("macaroon")
+                                .short('m')
+                                .help("path to the macaroon file")
+                                .required(true),
+                        )
+                        .arg(
+                            Arg::new("uri")
+                                .short('u')
+                                .help("lnd server uri")
+                                .required(true),
+                        ),
+                ),
         )
         .subcommand(
             Command::new("uri")

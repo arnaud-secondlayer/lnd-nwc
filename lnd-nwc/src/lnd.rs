@@ -1,18 +1,24 @@
-use std::fs;
 use lnd_grpc_rust;
+use std::fs;
+
+use crate::config::load_config;
 
 pub async fn lnd_display_info() {
-    let info =  get_info().await.unwrap();
+    let info = get_info().await.unwrap();
     println!("{:?}", info);
 }
 
 async fn get_info() -> Result<lnd_grpc_rust::lnrpc::GetInfoResponse, Box<dyn std::error::Error>> {
-    let cert_bytes = fs::read("tls.cert").expect("FailedToReadTlsCertFile");
-    let mac_bytes = fs::read("admin.macaroon").expect("FailedToReadMacaroonFile");
+    let cfg = load_config();
+
+    let cert_bytes = fs::read(&cfg.lnd.cert_file)
+        .expect(format!("Failed to read certificate file: {:?}", &cfg.lnd.cert_file).as_str());
+    let mac_bytes = fs::read(&cfg.lnd.macaroon_file)
+        .expect(format!("Failed to read macaroon file {:?}", &cfg.lnd.macaroon_file).as_str());
 
     let cert = buffer_as_hex(cert_bytes);
     let macaroon = buffer_as_hex(mac_bytes);
-    let socket = "192.168.1.8:10009".to_string();
+    let socket = cfg.lnd.uri.clone();
 
     let mut client = lnd_grpc_rust::connect(cert, macaroon, socket)
         .await
