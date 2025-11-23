@@ -1,13 +1,16 @@
 use clap::{Arg, Command};
 
 mod config;
-mod grpc;
+mod lnd;
+mod nostr;
+mod nostr_config;
 mod uri;
 mod uri_config;
 
+use lnd::lnd_display_info;
+use nostr::start_deamon;
+use nostr_config::load_or_generate_keys;
 use uri_config::{create_and_save, load_and_display, remove_and_save};
-
-use crate::grpc::display_lnd_info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,13 +18,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match matches.subcommand() {
         Some(("deamon", _)) => {
-            println!("Starting deamon");
+            let keys = load_or_generate_keys().expect("Could not retrieve keys");
+            start_deamon(keys).await;
         }
         Some(("lnd", sub_matches)) => {
             let command = sub_matches.subcommand().unwrap_or(("", sub_matches));
             match command {
                 ("info", _) => {
-                    display_lnd_info().await;
+                    lnd_display_info().await;
                 }
                 (name, _) => {
                     unreachable!("Unsupported subcommand `{name}`")
@@ -62,16 +66,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => unreachable!(), // If all subcommands are defined above, anything else is unreachable!()
     };
 
-    // let uri = uri::create_uri(&"wss://relay.damus.io".to_string());
-    // println!("{}", uri);
-    // let info = grpc::get_info().await;
-    // println!("{:?}", info);
     Ok(())
 }
 
 fn cli() -> Command {
-    Command::new("git")
-        .about("A fictional versioning CLI")
+    Command::new("lnd-nwc")
+        .about("A nostr waller service")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .allow_external_subcommands(true)

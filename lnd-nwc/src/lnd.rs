@@ -1,7 +1,7 @@
 use std::fs;
 use lnd_grpc_rust;
 
-pub async fn display_lnd_info() {
+pub async fn lnd_display_info() {
     let info =  get_info().await.unwrap();
     println!("{:?}", info);
 }
