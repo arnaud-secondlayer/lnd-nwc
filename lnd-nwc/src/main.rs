@@ -10,7 +10,7 @@ mod uri_config;
 
 use lnd::lnd_display_info;
 use lnd_config::store_lnd_config;
-use nostr::start_deamon;
+use nostr::{start_deamon, test};
 use nostr_config::load_or_generate_keys;
 use uri_config::{create_and_save, load_and_display, remove_and_save};
 
@@ -21,6 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = cli().get_matches();
 
     match matches.subcommand() {
+        Some(("test", _)) => {
+            test().await;
+        }
         Some(("deamon", _)) => {
             let keys = load_or_generate_keys().expect("Could not retrieve keys");
             start_deamon(keys).await;
@@ -87,6 +90,7 @@ fn cli() -> Command {
         .arg_required_else_help(true)
         .allow_external_subcommands(true)
         .subcommand(Command::new("deamon").about("Starts the deamon"))
+        .subcommand(Command::new("test").about("Send a test nwc event"))
         .subcommand(
             Command::new("lnd")
                 .args_conflicts_with_subcommands(true)

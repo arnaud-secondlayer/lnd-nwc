@@ -68,7 +68,16 @@ async fn _handle_single_uri_events(nwc_uri: &NostrWalletConnectURI) -> NWC {
     nwc
 }
 
-async fn handler(notification: Notification) -> Result<bool> {
-    println!("Found notification: {:?}", notification);
-    Ok(true)
+pub async fn test() -> Result<()> {
+    let uri = NostrWalletConnectURI::parse(
+        "nostr+walletconnect://6668a16a671b7de512e9cd2e53b58d70d6c748df1ba036e42022d3cb4df2f283?relay=ws%3A%2F%2F127.0.0.1%3A8080&secret=cd33ae06fee87b2bfd7e79b3d914fb354e06748f8328fc9b115a0e90d9fbcfef",
+    )?;
+    let nwc = NWC::new(uri);
+
+    tracing::info!("Test for {:?}", nwc);
+
+    let info = nwc.get_info().await.expect("Could not get info");
+    tracing::info!("Supported methods: {:?}", info.methods);
+
+    Ok(())
 }
