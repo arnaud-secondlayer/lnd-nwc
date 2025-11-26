@@ -10,12 +10,12 @@ pub fn store_lnd_config(cert_file: &str, macaroon_file: &str, uri: &str) {
         .expect("Could not create the absolute path the macaroon file");
 
     if !cert_path.exists() {
-        println!("Certificate file {:?} does not exist", cert_path);
+        tracing::error!("Certificate file {:?} does not exist", cert_path);
         return;
     }
 
     if !macaroon_path.exists() {
-        println!("Macaroon file {:?} does not exist", macaroon_path);
+        tracing::error!("Macaroon file {:?} does not exist", macaroon_path);
         return;
     }
 

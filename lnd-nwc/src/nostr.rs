@@ -8,7 +8,7 @@ const FEATURES: [&str; 1] = ["get_info"];
 pub async fn start_deamon(keys: Keys) {
     let cfg = load_config();
 
-    println!("Starting deamon");
+    tracing::info!("Starting deamon");
 
     _post_info_to_all_servers(keys.clone(), &cfg).await;
     _handle_all_uri_events(&cfg).await;
@@ -29,7 +29,6 @@ async fn _post_info_to_all_servers(keys: Keys, cfg: &Config) {
         .flat_map(|uri| uri.relays.clone())
         .collect::<Vec<_>>()
     {
-        println!("Adding relay: {}", relay_url);
         client.add_relay(&relay_url).await.unwrap();
     }
 
@@ -38,8 +37,8 @@ async fn _post_info_to_all_servers(keys: Keys, cfg: &Config) {
     let output = client.send_event_builder(builder).await.unwrap();
 
     if !output.failed.is_empty() {
-        println!("Post info event to server success: {:?}", output.success);
-        println!("Post info event to server failed: {:?}", output.failed);
+        tracing::debug!("Post info event to server success: {:?}", output.success);
+        tracing::debug!("Post info event to server failed: {:?}", output.failed);
     }
 }
 

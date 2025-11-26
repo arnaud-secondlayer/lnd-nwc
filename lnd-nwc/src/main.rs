@@ -16,6 +16,8 @@ use uri_config::{create_and_save, load_and_display, remove_and_save};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().init();
+
     let matches = cli().get_matches();
 
     match matches.subcommand() {

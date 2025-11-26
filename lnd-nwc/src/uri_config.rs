@@ -1,7 +1,6 @@
 use crate::config::{load_config, store_config};
 use crate::uri::create_uri;
 
-
 pub fn load_and_display() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = load_config();
 

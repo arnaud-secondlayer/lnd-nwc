@@ -5,7 +5,7 @@ use crate::config::load_config;
 
 pub async fn lnd_display_info() {
     let info = get_info().await.unwrap();
-    println!("{:?}", info);
+    tracing::info!("{:?}", info);
 }
 
 async fn get_info() -> Result<lnd_grpc_rust::lnrpc::GetInfoResponse, Box<dyn std::error::Error>> {
