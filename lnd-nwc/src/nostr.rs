@@ -10,11 +10,11 @@ pub async fn start_deamon(keys: Keys) {
 
     tracing::info!("Starting deamon");
 
-    _post_info_to_all_servers(keys.clone(), &cfg).await;
-    _handle_all_uri_events(&cfg).await;
+    // post_info_to_all_servers(keys.clone(), &cfg).await;
+    handle_all_uri_events(&cfg).await;
 }
 
-async fn _post_info_to_all_servers(keys: Keys, cfg: &Config) {
+async fn post_info_to_all_servers(keys: Keys, cfg: &Config) {
     let client = Client::new(keys.clone());
 
     let nwc_uris = cfg
@@ -42,7 +42,7 @@ async fn _post_info_to_all_servers(keys: Keys, cfg: &Config) {
     }
 }
 
-async fn _handle_all_uri_events(cfg: &Config) -> Vec<NWC> {
+async fn handle_all_uri_events(cfg: &Config) -> Vec<NWC> {
     let nwc_uris = cfg
         .uris
         .values()
@@ -52,20 +52,51 @@ async fn _handle_all_uri_events(cfg: &Config) -> Vec<NWC> {
 
     let mut nwcs = Vec::new();
     for nwc_uri in nwc_uris {
-        nwcs.push(_handle_single_uri_events(&nwc_uri).await);
+        nwcs.push(
+            handle_single_uri_events(&nwc_uri)
+                .await
+                .expect("Should be fine"),
+        );
     }
     nwcs
 }
 
-async fn _handle_single_uri_events(nwc_uri: &NostrWalletConnectURI) -> NWC {
+async fn handle_single_uri_events(
+    nwc_uri: &NostrWalletConnectURI,
+) -> Result<nwc::NWC, nostr_sdk::nips::nip47::Error> {
+    tracing::debug!("handle_single_uri_events: {}", nwc_uri);
+
     let nwc = NWC::new(nwc_uri.clone());
-    nwc.subscribe_to_notifications()
+
+    let filter = Filter::new()
+        .pubkey(nwc_uri.public_key)
+        .kind(Kind::WalletConnectRequest)
+        .since(Timestamp::now());
+
+    let client = Client::default();
+    for relay_url in nwc_uri.relays.iter() {
+        client.add_relay(relay_url.clone()).await.unwrap();
+    }
+    client.connect().await;
+
+    client
+        .subscribe(filter.clone(), None)
         .await
-        .expect("Cannot subscribe to notitfications");
-    nwc.handle_notifications(handler)
+        .expect("Failed to subscribe");
+
+    tracing::debug!("Ready to handle notifications for {}", nwc_uri);
+
+    client
+        .handle_notifications(handler)
         .await
-        .expect("Cannot handle notifications");
-    nwc
+        .expect("Could not add relay");
+
+    Ok(nwc)
+}
+
+async fn handler(notification: RelayPoolNotification) -> Result<bool> {
+    tracing::info!("Found notification: {:?}", notification);
+    Ok(false)
 }
 
 pub async fn test() -> Result<()> {
