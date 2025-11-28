@@ -4,7 +4,7 @@ use nostr_sdk::prelude::*;
 use nwc::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const FEATURES: [&str; 1] = ["get_info"];
 
@@ -36,7 +36,7 @@ async fn post_info_to_all_servers(keys: Keys, cfg: &Config) {
     for relay_url in nwc_uris
         .iter()
         .flat_map(|uri| uri.relays.clone())
-        .collect::<Vec<_>>()
+        .collect::<HashSet<_>>()
     {
         client.add_relay(&relay_url).await.unwrap();
     }
@@ -216,9 +216,8 @@ fn create_event(
 }
 
 pub async fn test() -> Result<()> {
-    let uri = NostrWalletConnectURI::parse(
-        "nostr+walletconnect://36edf4087c40bc5e3d52405dfcddbdeb259b9917b44f6c7513d049b9f00f66af?relay=ws%3A%2F%2F127.0.0.1%3A8080&secret=4b4a4a4f4f7232494c049b192f4e431becf78974e2e462f13c10ada4cfb904ad",
-    )?;
+    let cfg = load_config();
+    let uri = NostrWalletConnectURI::parse(cfg.uris.get("test").unwrap()).unwrap();
     let nwc = NWC::new(uri);
 
     tracing::info!("Test for {nwc:?}");
