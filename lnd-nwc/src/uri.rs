@@ -1,12 +1,12 @@
 use hex;
-use nostr_sdk::prelude::Keys;
+use nostr_sdk::prelude::PublicKey;
 use secp256k1::rand::{RngCore, rngs::OsRng};
 use urlencoding::encode;
 
-pub fn create_uri(relay: &str) -> String {
+pub fn create_uri(public_key: &PublicKey, relay: &str) -> String {
     format!(
         "nostr+walletconnect://{}?relay={}&secret={}",
-        Keys::generate().public_key().to_hex(),
+        public_key.to_hex(),
         encode(relay),
         generate_secret()
     )

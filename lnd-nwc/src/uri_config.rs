@@ -1,6 +1,8 @@
 use crate::config::{load_config, store_config};
 use crate::uri::create_uri;
 
+use nostr_sdk::{Keys, SecretKey};
+
 pub fn load_and_display() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = load_config();
 
@@ -23,7 +25,8 @@ pub fn create_and_save(name: &str, relay: &str) -> Result<(), Box<dyn std::error
         panic!("Uri name `{name}`already exists, remove it or use another one")
     }
 
-    let new_uri = create_uri(relay);
+    let public_key = Keys::new(SecretKey::from_hex(&cfg.nostr.secret).unwrap()).public_key();
+    let new_uri = create_uri(&public_key, relay);
     let _ = &cfg.uris.insert(name.into(), new_uri.clone());
 
     store_config(&cfg);
