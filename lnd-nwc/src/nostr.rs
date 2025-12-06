@@ -56,8 +56,15 @@ async fn post_info_to_all_servers(keys: &Keys, cfg: &Config) {
 
     client.connect().await;
 
-    let content = nwc_types::NwcResponse::default_responses().iter().map(|r| r.result_type().to_string()).collect::<Vec<_>>().join(" ");
-    let builder = EventBuilder::new(Kind::WalletConnectInfo, content).tag(Tag::custom(TagKind::Custom("encryption".into()), ["nip44_v2"]));
+    let content = nwc_types::NwcResponse::default_responses()
+        .iter()
+        .map(|r| r.result_type().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let builder = EventBuilder::new(Kind::WalletConnectInfo, content).tag(Tag::custom(
+        TagKind::Custom("encryption".into()),
+        ["nip44_v2"],
+    ));
     let output = client.send_event_builder(builder).await.unwrap();
 
     if !output.failed.is_empty() {
@@ -224,30 +231,6 @@ fn create_event(
         .sign_with_keys(service_keys)
         .unwrap();
     Some(event)
-}
-
-pub async fn test(action: &str) -> Result<()> {
-    let cfg = load_config();
-    let uri = NostrWalletConnectURI::parse(cfg.uris.get("test").unwrap()).unwrap();
-    let nwc = NWC::new(uri);
-
-    tracing::info!("Test for {nwc:?}");
-
-    match action {
-        "info" => {
-            let response = run_get_info().await;
-            tracing::info!("Supported methods: {:?}", response);
-        }
-        "balance" => {
-            let response = nwc.get_balance().await.expect("Could not get balance");
-            tracing::info!("Supported methods: {:?}", response);
-        }
-        _ => {
-            tracing::error!("Unknown action: {}", action);
-        }
-    }
-
-    Ok(())
 }
 
 // Calls
