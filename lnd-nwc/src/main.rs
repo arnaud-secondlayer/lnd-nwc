@@ -1,150 +1,99 @@
-use clap::{Arg, Command};
+use clap::{Parser, Subcommand};
 
 mod config;
 mod lnd;
 mod lnd_config;
 mod nostr;
 mod nostr_config;
+mod nwc_types;
 mod uri;
 mod uri_config;
 
-use lnd::lnd_display_info;
-use lnd_config::store_lnd_config;
-use nostr::{start_deamon, test};
-use nostr_config::load_or_generate_keys;
-use uri_config::{create_and_save, load_and_display, remove_and_save};
+#[derive(Parser)]
+#[command(name = "lnd-nwc")]
+#[command(about = "A nostr wallet service")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Daemon,
+    Test,
+    Lnd {
+        #[command(subcommand)]
+        action: LndAction,
+    },
+    Uri {
+        #[command(subcommand)]
+        action: UriAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LndAction {
+    Set {
+        #[arg(short = 'c', long)]
+        cert: String,
+        #[arg(short = 'm', long)]
+        macaroon: String,
+        #[arg(short = 'u', long)]
+        uri: String,
+    },
+    Info,
+}
+
+#[derive(Subcommand)]
+enum UriAction {
+    Create {
+        #[arg(short = 'n', long)]
+        name: String,
+        #[arg(short = 'r', long)]
+        relay: String,
+    },
+    Remove {
+        #[arg(short = 'n', long)]
+        name: String,
+    },
+    List,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().init();
 
-    let matches = cli().get_matches();
+    let cli = Cli::parse();
 
-    match matches.subcommand() {
-        Some(("test", _)) => {
-            test().await;
-        }
-        Some(("deamon", _)) => {
-            let keys = load_or_generate_keys().expect("Could not retrieve keys");
-            start_deamon(keys).await;
-        }
-        Some(("lnd", sub_matches)) => {
-            let command = sub_matches.subcommand().unwrap_or(("", sub_matches));
-            match command {
-                ("info", _) => {
-                    lnd_display_info().await;
-                }
-                ("set", sub_matches) => {
-                    store_lnd_config(
-                        sub_matches.get_one::<String>("cert").unwrap(),
-                        sub_matches.get_one::<String>("macaroon").unwrap(),
-                        sub_matches.get_one::<String>("uri").unwrap(),
-                    );
-                }
-                (name, _) => {
-                    unreachable!("Unsupported subcommand `{name}`")
-                }
+    match cli.command {
+        Commands::Uri { action } => match action {
+            UriAction::Create { name, relay } => {
+                let _ = nostr_config::load_or_generate_keys().expect("Could not retrieve keys");
+                let _ = uri_config::create_and_save(&name, &relay);
             }
-        }
-        Some(("uri", sub_matches)) => {
-            let command = sub_matches.subcommand().unwrap_or(("", sub_matches));
-            match command {
-                ("create", sub_matches) => {
-                    let default_relay = "wss://relay.damus.io".to_string();
-                    let name = sub_matches.get_one::<String>("name").unwrap();
-                    let relay = sub_matches
-                        .get_one::<String>("relay")
-                        .unwrap_or(&default_relay);
-                    let _ = create_and_save(name, relay);
-                }
-                ("remove", sub_matches) => {
-                    let name = sub_matches.get_one::<String>("name").unwrap();
-                    let _ = remove_and_save(name);
-                }
-                ("list", _) => {
-                    let _ = load_and_display();
-                }
-                (name, _) => {
-                    unreachable!("Unsupported subcommand `{name}`")
-                }
+            UriAction::Remove { name } => {
+                let _ = uri_config::remove_and_save(&name);
             }
+            UriAction::List => {
+                let _ = uri_config::load_and_display();
+            }
+        },
+        Commands::Lnd { action } => match action {
+            LndAction::Set {
+                cert,
+                macaroon,
+                uri,
+            } => lnd_config::store(&cert, &macaroon, &uri),
+            LndAction::Info => lnd::display_info().await,
+        },
+        Commands::Daemon => {
+            let keys = nostr_config::load_or_generate_keys().expect("Could not retrieve keys");
+            let _ = nostr::start_deamon(keys).await;
         }
-        Some((ext, sub_matches)) => {
-            let args = sub_matches
-                .get_many::<String>("")
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-            println!("Calling out to {ext:?} with {args:?}");
+        Commands::Test => {
+            let _ = nostr::test().await;
         }
-        _ => unreachable!(), // If all subcommands are defined above, anything else is unreachable!()
-    };
+    }
 
     Ok(())
-}
-
-fn cli() -> Command {
-    Command::new("lnd-nwc")
-        .about("A nostr waller service")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .allow_external_subcommands(true)
-        .subcommand(Command::new("deamon").about("Starts the deamon"))
-        .subcommand(Command::new("test").about("Send a test nwc event"))
-        .subcommand(
-            Command::new("lnd")
-                .args_conflicts_with_subcommands(true)
-                .flatten_help(true)
-                .subcommand(Command::new("info"))
-                .subcommand(
-                    Command::new("set")
-                        .arg(
-                            Arg::new("cert")
-                                .short('c')
-                                .help("path to the certificate file")
-                                .required(true),
-                        )
-                        .arg(
-                            Arg::new("macaroon")
-                                .short('m')
-                                .help("path to the macaroon file")
-                                .required(true),
-                        )
-                        .arg(
-                            Arg::new("uri")
-                                .short('u')
-                                .help("lnd server uri")
-                                .required(true),
-                        ),
-                ),
-        )
-        .subcommand(
-            Command::new("uri")
-                .args_conflicts_with_subcommands(true)
-                .flatten_help(true)
-                .subcommand(
-                    Command::new("create")
-                        .arg(
-                            Arg::new("relay")
-                                .short('r')
-                                .help("the nost relay URI")
-                                .required(false),
-                        )
-                        .arg(
-                            Arg::new("name")
-                                .short('n')
-                                .help("the uri name")
-                                .required(true),
-                        ),
-                )
-                .subcommand(
-                    Command::new("remove").arg(
-                        Arg::new("name")
-                            .short('n')
-                            .help("the uri name")
-                            .required(true),
-                    ),
-                )
-                .subcommand(Command::new("list")),
-        )
 }

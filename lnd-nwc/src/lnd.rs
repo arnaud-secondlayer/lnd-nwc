@@ -3,8 +3,8 @@ use std::fs;
 
 use crate::config::load_config;
 
-pub async fn lnd_display_info() {
-    let info = get_info().await.unwrap();
+pub async fn display_info() {
+    let info = get_info().await;
     tracing::info!("{:?}", info);
 }
 

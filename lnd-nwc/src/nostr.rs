@@ -1,55 +1,66 @@
-use crate::config::{Config, load_config};
+use core::fmt;
 
 use nostr_sdk::prelude::*;
 use nwc::prelude::*;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::collections::{HashMap, HashSet};
 
-const FEATURES: [&str; 1] = ["get_info"];
+use crate::config::{Config, load_config};
+use crate::nwc_types;
 
-#[derive(Serialize, Deserialize, Debug)]
-struct NwcRequest {
-    method: String,
-    params: HashMap<String, String>,
-}
-
-pub async fn start_deamon(service_keys: Keys) {
+pub async fn start_deamon(service_keys: Keys) -> Result<()>  {
     let cfg = load_config();
 
     tracing::info!("Starting deamon");
 
     // post_info_to_all_servers(keys.clone(), &cfg).await;
     handle_all_uri_events(&service_keys, &cfg).await;
+
+    Ok(())
 }
 
-async fn post_info_to_all_servers(keys: Keys, cfg: &Config) {
-    let client = Client::new(keys.clone());
+#[derive(Debug)]
+enum Error {
+    NwcError(nwc_types::NwcError),
+    ClientError(nostr_sdk::client::Error),
+}
 
-    let nwc_uris = cfg
-        .uris
-        .values()
-        .map(|uri| NostrWalletConnectURI::parse(uri.clone()))
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
+impl std::error::Error for Error {}
 
-    for relay_url in nwc_uris
-        .iter()
-        .flat_map(|uri| uri.relays.clone())
-        .collect::<HashSet<_>>()
-    {
-        client.add_relay(&relay_url).await.unwrap();
-    }
-
-    client.connect().await;
-    let builder = EventBuilder::new(Kind::WalletConnectInfo, FEATURES.join(" "));
-    let output = client.send_event_builder(builder).await.unwrap();
-
-    if !output.failed.is_empty() {
-        tracing::debug!("Post info event to server success: {:?}", output.success);
-        tracing::debug!("Post info event to server failed: {:?}", output.failed);
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NwcError(e) => e.fmt(f),
+            Self::ClientError(e) => e.fmt(f),
+        }
     }
 }
+
+// async fn post_info_to_all_servers(keys: Keys, cfg: &Config) {
+//     let client = Client::new(keys.clone());
+
+//     let nwc_uris = cfg
+//         .uris
+//         .values()
+//         .map(|uri| NostrWalletConnectURI::parse(uri.clone()))
+//         .filter_map(Result::ok)
+//         .collect::<Vec<_>>();
+
+//     for relay_url in nwc_uris
+//         .iter()
+//         .flat_map(|uri| uri.relays.clone())
+//         .collect::<HashSet<_>>()
+//     {
+//         client.add_relay(&relay_url).await.unwrap();
+//     }
+
+//     client.connect().await;
+//     let builder = EventBuilder::new(Kind::WalletConnectInfo, FEATURES.join(" "));
+//     let output = client.send_event_builder(builder).await.unwrap();
+
+//     if !output.failed.is_empty() {
+//         tracing::debug!("Post info event to server success: {:?}", output.success);
+//         tracing::debug!("Post info event to server failed: {:?}", output.failed);
+//     }
+// }
 
 async fn handle_all_uri_events(service_keys: &Keys, cfg: &Config) -> Vec<NWC> {
     let nwc_uris = cfg
@@ -73,7 +84,7 @@ async fn handle_all_uri_events(service_keys: &Keys, cfg: &Config) -> Vec<NWC> {
 async fn handle_single_uri_events(
     service_keys: &Keys,
     nwc_uri: &NostrWalletConnectURI,
-) -> Result<nwc::NWC, nostr_sdk::nips::nip47::Error> {
+) -> Result<nwc::NWC, Error> {
     tracing::debug!("handle_single_uri_events: {}", nwc_uri);
 
     let nwc = NWC::new(nwc_uri.clone());
@@ -96,18 +107,21 @@ async fn handle_single_uri_events(
 
     tracing::info!("Ready to handle notifications for {nwc_uri}");
 
-    client
+    let result = client
         .handle_notifications(|notification| async {
             handler(
                 service_keys,
                 notification,
                 &nwc_uri.clone(),
-                subscription_id.val.clone(),
+                &subscription_id.val,
             )
-            .await
+            .await;
+            Ok(false)
         })
-        .await
-        .expect("Could not add relay");
+        .await;
+    if let Err(e) = result {
+        return Err(Error::ClientError(e));
+    }
 
     Ok(nwc)
 }
@@ -116,8 +130,8 @@ async fn handler(
     service_keys: &Keys,
     notification: RelayPoolNotification,
     nwc_uri: &NostrWalletConnectURI,
-    requested_subscription_id: SubscriptionId,
-) -> Result<bool> {
+    requested_subscription_id: &SubscriptionId,
+) {
     tracing::info!("Received notification");
     if let RelayPoolNotification::Event {
         subscription_id,
@@ -131,51 +145,60 @@ async fn handler(
             event.pubkey,
             event.content
         );
-        if subscription_id != requested_subscription_id {
-            tracing::error!("Incorrect subscription ID");
-            return Ok(false);
+        if subscription_id != *requested_subscription_id {
+            tracing::error!(
+                "Incorrect subscription ID {subscription_id} vs {requested_subscription_id}"
+            );
+            return;
         }
-        if event.kind == Kind::WalletConnectRequest {
-            if let Ok(msg) = nip04::decrypt(&nwc_uri.secret, &nwc_uri.public_key, &event.content) {
-                tracing::info!("Decrypted message: {}", msg);
-                if let Ok(request) = serde_json::from_str::<NwcRequest>(&msg) {
-                    handle_nwc_request(service_keys, &event.id, &request, &nwc_uri).await;
-                } else {
-                    tracing::error!("Invalid NWC_Request");
-                }
-            } else {
-                tracing::error!("Impossible to decrypt direct message");
-            }
-        } else {
-            tracing::info!("Received clear event");
+
+        if event.kind != Kind::WalletConnectRequest {
+            tracing::error!("Received unexpected event kind");
+            return;
+        }
+
+        let msg = nip04::decrypt(&nwc_uri.secret, &nwc_uri.public_key, &event.content);
+        if let Err(e) = msg {
+            tracing::error!("Impossible to decrypt direct message: {e}");
+            return;
+        }
+
+        let request = nwc_types::NwcRequest::from_value(&msg.unwrap());
+        if let Err(e) = request {
+            tracing::error!("Impossible to decrypt direct message {e}");
+            return;
+        }
+
+        let result = handle_nwc_request(service_keys, &event.id, &request.unwrap(), &nwc_uri).await;
+        if let Err(ref e) = result {
+            tracing::error!("Error while handling the request {e:?}");
         }
     }
-    Ok(false)
+
+    tracing::info!("Return true");
 }
 
 async fn handle_nwc_request(
     service_keys: &Keys,
     event_id: &EventId,
-    request: &NwcRequest,
+    request: &nwc_types::NwcRequest,
     uri: &NostrWalletConnectURI,
-) {
-    let content: String;
-    match request.method.as_str() {
-        "get_info" => {
-            let data = json!({
-                            "result_type": "get_info",
-                            "result": json!({
-                                "methods": ["get_info"]
-                            })
-            });
-            content = serde_json::to_string(&data).unwrap();
-            tracing::info!("Ready to send response {content}");
+) -> Result<(), Error> {
+    let response = match request {
+        nwc_types::NwcRequest::GetInfo(_) => {
+            nwc_types::NwcResponse::GetInfo(nwc_types::GetInfoResult {
+                methods: vec!["get_info".into()],
+            })
         }
-        _ => {
-            tracing::error!("Unsupported method {}", request.method);
-            return;
+        nwc_types::NwcRequest::GetBalance(_) => {
+            tracing::error!("Unsupported method GetBalance");
+            return Err(Error::NwcError(nwc_types::NwcError::UnknownMethod));
         }
-    }
+    };
+
+    let content = response
+        .to_event_content()
+        .map_err(|e| Error::NwcError(e))?;
 
     let client = Client::default();
     for relay_url in uri.relays.iter() {
@@ -187,16 +210,8 @@ async fn handle_nwc_request(
     tracing::info!("Ready to send response {}", event.id);
     client.send_event(&event).await.unwrap();
 
-    let filter = Filter::new()
-        .author(uri.public_key)
-        .kind(Kind::WalletConnectResponse)
-        .event(event_id.clone());
-
-    tracing::info!(
-        "Sent response {} => {}",
-        event.id,
-        filter.match_event(&event, MatchEventOptions::default())
-    );
+    tracing::info!("Sent response {}", event.id);
+    Ok(())
 }
 
 fn create_event(
@@ -206,7 +221,6 @@ fn create_event(
     uri: &NostrWalletConnectURI,
 ) -> Option<Event> {
     let encrypted = nip04::encrypt(&uri.secret, &uri.public_key, content).unwrap();
-    // let keys: Keys = Keys::new(uri.secret.clone());
     let event = EventBuilder::new(Kind::WalletConnectResponse, encrypted)
         .tag(Tag::event(event_id.clone()))
         .build(uri.public_key)

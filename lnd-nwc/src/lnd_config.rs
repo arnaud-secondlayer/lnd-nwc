@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::config::{load_config, store_config};
 
-pub fn store_lnd_config(cert_file: &str, macaroon_file: &str, uri: &str) {
+pub fn store(cert_file: &str, macaroon_file: &str, uri: &str) {
     let cert_path = fs::canonicalize(Path::new(cert_file))
         .expect("Could not create the absolute path the certificate file");
     let macaroon_path = fs::canonicalize(Path::new(macaroon_file))
