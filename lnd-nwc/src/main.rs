@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::fmt;
 
 mod config;
 mod lnd;
@@ -20,7 +21,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Daemon,
-    Test,
+    Test {
+        #[command(subcommand)]
+        action: TestAction,
+    },
     Lnd {
         #[command(subcommand)]
         action: LndAction,
@@ -59,6 +63,21 @@ enum UriAction {
     List,
 }
 
+#[derive(Subcommand)]
+enum TestAction {
+    Info,
+    Balance,
+}
+
+impl fmt::Display for TestAction {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TestAction::Info => write!(f, "info"),
+            TestAction::Balance => write!(f, "balance"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().init();
@@ -90,8 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let keys = nostr_config::load_or_generate_keys().expect("Could not retrieve keys");
             let _ = nostr::start_deamon(keys).await;
         }
-        Commands::Test => {
-            let _ = nostr::test().await;
+        Commands::Test { action } => {
+            let _ = nostr::test(&action.to_string()).await;
         }
     }
 

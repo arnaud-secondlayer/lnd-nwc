@@ -34,6 +34,36 @@ async fn get_info() -> Result<lnd_grpc_rust::lnrpc::GetInfoResponse, Box<dyn std
     Ok(info)
 }
 
+pub(crate) async fn wallet_balance()
+-> Result<lnd_grpc_rust::lnrpc::WalletBalanceResponse, Box<dyn std::error::Error>> {
+    let cfg = load_config();
+
+    let cert_bytes = fs::read(&cfg.lnd.cert_file)
+        .expect(format!("Failed to read certificate file: {:?}", &cfg.lnd.cert_file).as_str());
+    let mac_bytes = fs::read(&cfg.lnd.macaroon_file)
+        .expect(format!("Failed to read macaroon file {:?}", &cfg.lnd.macaroon_file).as_str());
+
+    let cert = buffer_as_hex(cert_bytes);
+    let macaroon = buffer_as_hex(mac_bytes);
+    let socket = cfg.lnd.uri.clone();
+
+    let mut client = lnd_grpc_rust::connect(cert, macaroon, socket)
+        .await
+        .expect("failed to connect");
+
+    let info = client
+        .lightning()
+        .wallet_balance(lnd_grpc_rust::lnrpc::WalletBalanceRequest {
+            account: "default".to_string(),
+            min_confs: 0,
+        })
+        .await
+        .expect("failed to get balance")
+        .into_inner();
+
+    Ok(info)
+}
+
 fn buffer_as_hex(bytes: Vec<u8>) -> String {
     return bytes
         .iter()

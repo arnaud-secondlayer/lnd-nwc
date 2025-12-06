@@ -1,17 +1,19 @@
 use core::fmt;
+use std::collections::HashSet;
 
 use nostr_sdk::prelude::*;
 use nwc::prelude::*;
 
 use crate::config::{Config, load_config};
+use crate::lnd;
 use crate::nwc_types;
 
-pub async fn start_deamon(service_keys: Keys) -> Result<()>  {
+pub async fn start_deamon(service_keys: Keys) -> Result<()> {
     let cfg = load_config();
 
     tracing::info!("Starting deamon");
 
-    // post_info_to_all_servers(keys.clone(), &cfg).await;
+    post_info_to_all_servers(&service_keys, &cfg).await;
     handle_all_uri_events(&service_keys, &cfg).await;
 
     Ok(())
@@ -34,33 +36,35 @@ impl fmt::Display for Error {
     }
 }
 
-// async fn post_info_to_all_servers(keys: Keys, cfg: &Config) {
-//     let client = Client::new(keys.clone());
+async fn post_info_to_all_servers(keys: &Keys, cfg: &Config) {
+    let client = Client::new(keys.clone());
 
-//     let nwc_uris = cfg
-//         .uris
-//         .values()
-//         .map(|uri| NostrWalletConnectURI::parse(uri.clone()))
-//         .filter_map(Result::ok)
-//         .collect::<Vec<_>>();
+    let nwc_uris = cfg
+        .uris
+        .values()
+        .map(|uri| NostrWalletConnectURI::parse(uri.clone()))
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
 
-//     for relay_url in nwc_uris
-//         .iter()
-//         .flat_map(|uri| uri.relays.clone())
-//         .collect::<HashSet<_>>()
-//     {
-//         client.add_relay(&relay_url).await.unwrap();
-//     }
+    for relay_url in nwc_uris
+        .iter()
+        .flat_map(|uri| uri.relays.clone())
+        .collect::<HashSet<_>>()
+    {
+        client.add_relay(&relay_url).await.unwrap();
+    }
 
-//     client.connect().await;
-//     let builder = EventBuilder::new(Kind::WalletConnectInfo, FEATURES.join(" "));
-//     let output = client.send_event_builder(builder).await.unwrap();
+    client.connect().await;
 
-//     if !output.failed.is_empty() {
-//         tracing::debug!("Post info event to server success: {:?}", output.success);
-//         tracing::debug!("Post info event to server failed: {:?}", output.failed);
-//     }
-// }
+    let content = nwc_types::NwcResponse::default_responses().iter().map(|r| r.result_type().to_string()).collect::<Vec<_>>().join(" ");
+    let builder = EventBuilder::new(Kind::WalletConnectInfo, content).tag(Tag::custom(TagKind::Custom("encryption".into()), ["nip44_v2"]));
+    let output = client.send_event_builder(builder).await.unwrap();
+
+    if !output.failed.is_empty() {
+        tracing::debug!("Post info event to server success: {:?}", output.success);
+        tracing::debug!("Post info event to server failed: {:?}", output.failed);
+    }
+}
 
 async fn handle_all_uri_events(service_keys: &Keys, cfg: &Config) -> Vec<NWC> {
     let nwc_uris = cfg
@@ -185,15 +189,8 @@ async fn handle_nwc_request(
     uri: &NostrWalletConnectURI,
 ) -> Result<(), Error> {
     let response = match request {
-        nwc_types::NwcRequest::GetInfo(_) => {
-            nwc_types::NwcResponse::GetInfo(nwc_types::GetInfoResult {
-                methods: vec!["get_info".into()],
-            })
-        }
-        nwc_types::NwcRequest::GetBalance(_) => {
-            tracing::error!("Unsupported method GetBalance");
-            return Err(Error::NwcError(nwc_types::NwcError::UnknownMethod));
-        }
+        nwc_types::NwcRequest::GetInfo(_) => run_get_info().await,
+        nwc_types::NwcRequest::GetBalance(_) => run_get_balance().await,
     };
 
     let content = response
@@ -229,15 +226,46 @@ fn create_event(
     Some(event)
 }
 
-pub async fn test() -> Result<()> {
+pub async fn test(action: &str) -> Result<()> {
     let cfg = load_config();
     let uri = NostrWalletConnectURI::parse(cfg.uris.get("test").unwrap()).unwrap();
     let nwc = NWC::new(uri);
 
     tracing::info!("Test for {nwc:?}");
 
-    let info = nwc.get_info().await.expect("Could not get info");
-    tracing::info!("Supported methods: {:?}", info.methods);
+    match action {
+        "info" => {
+            let response = run_get_info().await;
+            tracing::info!("Supported methods: {:?}", response);
+        }
+        "balance" => {
+            let response = nwc.get_balance().await.expect("Could not get balance");
+            tracing::info!("Supported methods: {:?}", response);
+        }
+        _ => {
+            tracing::error!("Unknown action: {}", action);
+        }
+    }
 
     Ok(())
+}
+
+// Calls
+
+async fn run_get_info() -> nwc_types::NwcResponse {
+    nwc_types::NwcResponse::GetInfo(nwc_types::GetInfoResult {
+        methods: nwc_types::NwcResponse::default_responses()
+            .iter()
+            .map(|r| r.result_type().to_string())
+            .collect::<Vec<_>>(),
+    })
+}
+
+async fn run_get_balance() -> nwc_types::NwcResponse {
+    let lnd_balance = lnd::wallet_balance()
+        .await
+        .expect("Could not retrieve balance");
+    nwc_types::NwcResponse::GetBalance(nwc_types::GetBalanceResult {
+        balance: lnd_balance.confirmed_balance,
+    })
 }
