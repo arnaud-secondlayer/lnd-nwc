@@ -1,8 +1,8 @@
 use core::fmt;
 use std::collections::HashSet;
 
+use futures::future::join_all;
 use nostr_sdk::prelude::*;
-use nwc::prelude::*;
 
 use crate::config::{Config, load_config};
 use crate::lnd;
@@ -73,7 +73,7 @@ async fn post_info_to_all_servers(keys: &Keys, cfg: &Config) {
     }
 }
 
-async fn handle_all_uri_events(service_keys: &Keys, cfg: &Config) -> Vec<NWC> {
+async fn handle_all_uri_events(service_keys: &Keys, cfg: &Config) -> Result<(), Error> {
     let nwc_uris = cfg
         .uris
         .values()
@@ -81,52 +81,45 @@ async fn handle_all_uri_events(service_keys: &Keys, cfg: &Config) -> Vec<NWC> {
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
 
-    let mut nwcs = Vec::new();
-    for nwc_uri in nwc_uris {
-        nwcs.push(
-            handle_single_uri_events(service_keys, &nwc_uri)
-                .await
-                .expect("Should be fine"),
-        );
-    }
-    nwcs
-}
-
-async fn handle_single_uri_events(
-    service_keys: &Keys,
-    nwc_uri: &NostrWalletConnectURI,
-) -> Result<nwc::NWC, Error> {
-    tracing::debug!("handle_single_uri_events: {}", nwc_uri);
-
-    let nwc = NWC::new(nwc_uri.clone());
-
-    let filter = Filter::new()
-        .pubkey(nwc_uri.public_key)
-        .kind(Kind::WalletConnectRequest)
-        .since(Timestamp::now());
+    let timestamp = Timestamp::now();
 
     let client = Client::default();
-    for relay_url in nwc_uri.relays.iter() {
-        client.add_relay(relay_url.clone()).await.unwrap();
+    for relay_url in nwc_uris
+        .iter()
+        .flat_map(|uri| uri.relays.clone())
+        .collect::<HashSet<_>>()
+    {
+        client.add_relay(&relay_url).await.unwrap();
     }
     client.connect().await;
 
-    let subscription_id = client
-        .subscribe(filter.clone(), None)
-        .await
-        .expect("Failed to subscribe");
+    let filters = nwc_uris
+        .iter()
+        .map(|nwc_uri| {
+            Filter::new()
+                .pubkey(nwc_uri.public_key)
+                .kind(Kind::WalletConnectRequest)
+                .since(timestamp)
+        })
+        .collect::<Vec<_>>();
 
-    tracing::info!("Ready to handle notifications for {nwc_uri}");
+    let subscription_ids = join_all(
+        filters
+            .iter()
+            .map(|filter| client.subscribe(filter.clone(), None))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .into_iter()
+    .map(|subscription| subscription.map_or(None, |id| Some(id.val)))
+    .collect::<Vec<_>>();
+
+    let uri_id_map: Vec<(NostrWalletConnectURI, Option<SubscriptionId>)> =
+        nwc_uris.into_iter().zip(subscription_ids).collect();
 
     let result = client
         .handle_notifications(|notification| async {
-            handler(
-                service_keys,
-                notification,
-                &nwc_uri.clone(),
-                &subscription_id.val,
-            )
-            .await;
+            handler(service_keys, notification, &uri_id_map).await;
             Ok(false)
         })
         .await;
@@ -134,14 +127,13 @@ async fn handle_single_uri_events(
         return Err(Error::ClientError(e));
     }
 
-    Ok(nwc)
+    Ok(())
 }
 
 async fn handler(
     service_keys: &Keys,
     notification: RelayPoolNotification,
-    nwc_uri: &NostrWalletConnectURI,
-    requested_subscription_id: &SubscriptionId,
+    uri_ids: &Vec<(NostrWalletConnectURI, Option<SubscriptionId>)>,
 ) {
     tracing::info!("Received notification");
     if let RelayPoolNotification::Event {
@@ -156,33 +148,37 @@ async fn handler(
             event.pubkey,
             event.content
         );
-        if subscription_id != *requested_subscription_id {
-            tracing::error!(
-                "Incorrect subscription ID {subscription_id} vs {requested_subscription_id}"
-            );
-            return;
-        }
 
         if event.kind != Kind::WalletConnectRequest {
             tracing::error!("Received unexpected event kind");
             return;
         }
 
-        let msg = nip04::decrypt(&nwc_uri.secret, &nwc_uri.public_key, &event.content);
-        if let Err(e) = msg {
-            tracing::error!("Impossible to decrypt direct message: {e}");
-            return;
-        }
+        let uri_id = uri_ids
+            .iter()
+            .filter(|(_, opt_id)| opt_id.as_ref() == Some(&subscription_id))
+            .next();
 
-        let request = nwc_types::NwcRequest::from_value(&msg.unwrap());
-        if let Err(e) = request {
-            tracing::error!("Impossible to decrypt direct message {e}");
-            return;
-        }
+        if let Some(nwc_uri) = uri_id.map(|(uri, _)| uri) {
+            let msg = nip04::decrypt(&nwc_uri.secret, &nwc_uri.public_key, &event.content);
+            if let Err(e) = msg {
+                tracing::error!("Impossible to decrypt direct message: {e}");
+                return;
+            }
 
-        let result = handle_nwc_request(service_keys, &event.id, &request.unwrap(), &nwc_uri).await;
-        if let Err(ref e) = result {
-            tracing::error!("Error while handling the request {e:?}");
+            let request = nwc_types::NwcRequest::from_value(&msg.unwrap());
+            if let Err(e) = request {
+                tracing::error!("Impossible to decrypt direct message {e}");
+                return;
+            }
+
+            let result =
+                handle_nwc_request(service_keys, &event.id, &request.unwrap(), &nwc_uri).await;
+            if let Err(ref e) = result {
+                tracing::error!("Error while handling the request {e:?}");
+            }
+        } else {
+            tracing::error!("Incorrect subscription ID {subscription_id} vs {uri_ids:?}");
         }
     }
 
@@ -225,12 +221,11 @@ fn create_event(
     uri: &NostrWalletConnectURI,
 ) -> Option<Event> {
     let encrypted = nip04::encrypt(&uri.secret, &uri.public_key, content).unwrap();
-    let event = EventBuilder::new(Kind::WalletConnectResponse, encrypted)
+    EventBuilder::new(Kind::WalletConnectResponse, encrypted)
         .tag(Tag::event(event_id.clone()))
         .build(uri.public_key)
         .sign_with_keys(service_keys)
-        .unwrap();
-    Some(event)
+        .ok()
 }
 
 // Calls
