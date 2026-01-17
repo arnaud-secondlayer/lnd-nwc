@@ -2,6 +2,10 @@ use core::fmt;
 use std::collections::HashSet;
 
 use futures::future::join_all;
+use nostr_sdk::nips::nip47::{
+    Notification as Nip47Notification, NotificationResult, NotificationType, PaymentNotification,
+    TransactionState, TransactionType,
+};
 use nostr_sdk::prelude::*;
 
 use crate::config::{Config, load_config};
@@ -14,7 +18,9 @@ pub async fn start_deamon(service_keys: Keys) -> Result<()> {
     tracing::info!("Starting deamon");
 
     post_info_to_all_servers(&service_keys, &cfg).await;
-    handle_all_uri_events(&service_keys, &cfg).await;
+    if let Err(e) = handle_all_uri_events(&service_keys, &cfg).await {
+        tracing::error!("Error while handling URI events: {e}");
+    }
 
     Ok(())
 }
@@ -194,7 +200,20 @@ async fn handle_nwc_request(
     let response = match request {
         nwc_types::NwcRequest::GetInfo(_) => run_get_info().await,
         nwc_types::NwcRequest::GetBalance(_) => run_get_balance().await,
-    };
+        nwc_types::NwcRequest::PayInvoice(params) => {
+            run_pay_invoice(service_keys, uri, params).await
+        }
+        nwc_types::NwcRequest::PayKeysend(params) => {
+            run_pay_keysend(service_keys, uri, params).await
+        }
+        nwc_types::NwcRequest::MakeInvoice(params) => {
+            run_make_invoice(service_keys, uri, params).await
+        }
+        nwc_types::NwcRequest::LookupInvoice(params) => {
+            run_lookup_invoice(service_keys, uri, params).await
+        }
+    }
+    .map_err(Error::NwcError)?;
 
     let content = response
         .to_event_content()
@@ -230,20 +249,402 @@ fn create_event(
 
 // Calls
 
-async fn run_get_info() -> nwc_types::NwcResponse {
-    nwc_types::NwcResponse::GetInfo(nwc_types::GetInfoResult {
+async fn run_get_info() -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
+    Ok(nwc_types::NwcResponse::GetInfo(nwc_types::GetInfoResult {
         methods: nwc_types::NwcResponse::default_responses()
             .iter()
             .map(|r| r.result_type().to_string())
             .collect::<Vec<_>>(),
+    }))
+}
+
+async fn run_get_balance() -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
+    let lnd_balance = lnd::wallet_balance()
+        .await
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+    Ok(nwc_types::NwcResponse::GetBalance(
+        nwc_types::GetBalanceResult {
+            balance: lnd_balance.confirmed_balance * 1000,
+        },
+    ))
+}
+
+async fn run_pay_invoice(
+    service_keys: &Keys,
+    uri: &NostrWalletConnectURI,
+    request: &nwc_types::PayInvoiceRequest,
+) -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
+    let payment = lnd::pay_invoice(&request.invoice, request.amount)
+        .await
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    let notification = payment_sent_notification(
+        &payment,
+        TransactionType::Outgoing,
+        request.invoice.clone(),
+        request.amount,
+    );
+    if let Err(e) = send_payment_notification(
+        service_keys,
+        uri,
+        NotificationType::PaymentSent,
+        notification,
+    )
+    .await
+    {
+        tracing::error!("Failed to send payment_sent notification: {e}");
+    }
+
+    Ok(nwc_types::NwcResponse::PayInvoice(
+        nwc_types::PayInvoiceResult {
+            preimage: payment.payment_preimage.clone(),
+            fees_paid: payment.fee_msat.try_into().ok(),
+        },
+    ))
+}
+
+async fn run_pay_keysend(
+    service_keys: &Keys,
+    uri: &NostrWalletConnectURI,
+    request: &nwc_types::PayKeysendRequest,
+) -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
+    let tlv_records: Vec<(u64, String)> = request
+        .tlv_records
+        .iter()
+        .map(|record: &nwc_types::KeysendTLVRecord| (record.tlv_type, record.value.clone()))
+        .collect();
+
+    let payment = lnd::pay_keysend(
+        &request.pubkey,
+        request.amount,
+        request.preimage.as_deref(),
+        &tlv_records,
+    )
+    .await
+    .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    let notification = payment_sent_notification(
+        &payment,
+        TransactionType::Outgoing,
+        "".to_string(),
+        Some(request.amount),
+    );
+    if let Err(e) = send_payment_notification(
+        service_keys,
+        uri,
+        NotificationType::PaymentSent,
+        notification,
+    )
+    .await
+    {
+        tracing::error!("Failed to send payment_sent notification: {e}");
+    }
+
+    Ok(nwc_types::NwcResponse::PayKeysend(
+        nwc_types::PayKeysendResult {
+            preimage: if payment.payment_preimage.is_empty() {
+                request
+                    .preimage
+                    .clone()
+                    .unwrap_or_else(|| "".to_string())
+            } else {
+                payment.payment_preimage.clone()
+            },
+            fees_paid: payment
+                .fee_msat
+                .try_into()
+                .ok(),
+        },
+    ))
+}
+
+async fn run_make_invoice(
+    service_keys: &Keys,
+    uri: &NostrWalletConnectURI,
+    request: &nwc_types::MakeInvoiceRequest,
+) -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
+    let invoice = lnd::make_invoice(
+        request.amount,
+        request.description.as_deref(),
+        request.description_hash.as_deref(),
+        request.expiry,
+    )
+    .await
+    .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    let payment_hash = hex::encode(invoice.r_hash.clone());
+    let created_at = Timestamp::now();
+    let expires_at = request
+        .expiry
+        .map(|secs| Timestamp::from(created_at.as_secs() + secs));
+
+    spawn_payment_received_notifier(
+        service_keys.clone(),
+        uri.clone(),
+        invoice.r_hash.clone(),
+        invoice.payment_request.clone(),
+    );
+
+    Ok(nwc_types::NwcResponse::MakeInvoice(
+        nwc_types::MakeInvoiceResult {
+            invoice: invoice.payment_request,
+            payment_hash: Some(payment_hash),
+            description: request.description.clone(),
+            description_hash: request.description_hash.clone(),
+            preimage: None,
+            amount: Some(request.amount),
+            created_at: Some(created_at),
+            expires_at,
+        },
+    ))
+}
+
+async fn run_lookup_invoice(
+    service_keys: &Keys,
+    uri: &NostrWalletConnectURI,
+    request: &nwc_types::LookupInvoiceRequest,
+) -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
+    let invoice = lnd::lookup_invoice(
+        request.payment_hash.as_deref(),
+        request.invoice.as_deref(),
+    )
+    .await
+    .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    let result = invoice_to_lookup_result(&invoice)?;
+
+    if matches!(result.state, Some(TransactionState::Settled)) {
+        if let Err(e) = send_payment_notification(
+            service_keys,
+            uri,
+            NotificationType::PaymentReceived,
+            payment_received_notification(&invoice),
+        )
+        .await
+        {
+            tracing::error!("Failed to send payment_received notification: {e}");
+        }
+    }
+
+    Ok(nwc_types::NwcResponse::LookupInvoice(result))
+}
+
+fn payment_sent_notification(
+    payment: &lnd_grpc_rust::lnrpc::Payment,
+    transaction_type: TransactionType,
+    invoice: String,
+    amount_override_msat: Option<u64>,
+) -> PaymentNotification {
+    let amount_msat = amount_override_msat
+        .or_else(|| payment.value_msat.try_into().ok())
+        .unwrap_or(0);
+    let fee_msat = payment.fee_msat.try_into().ok().unwrap_or(0);
+
+    let created_at = nanos_to_timestamp(payment.creation_time_ns);
+    let settled_at = payment
+        .htlcs
+        .iter()
+        .filter_map(|htlc| nanos_to_timestamp_opt(htlc.resolve_time_ns))
+        .max()
+        .unwrap_or_else(Timestamp::now);
+
+    PaymentNotification {
+        transaction_type: Some(transaction_type),
+        state: Some(TransactionState::Settled),
+        invoice,
+        description: None,
+        description_hash: None,
+        preimage: payment.payment_preimage.clone(),
+        payment_hash: payment.payment_hash.clone(),
+        amount: amount_msat,
+        fees_paid: fee_msat,
+        created_at,
+        expires_at: None,
+        settled_at,
+        metadata: None,
+    }
+}
+
+fn payment_received_notification(invoice: &lnd_grpc_rust::lnrpc::Invoice) -> PaymentNotification {
+    let amount_msat = if invoice.amt_paid_msat > 0 {
+        invoice.amt_paid_msat as u64
+    } else {
+        invoice.value_msat as u64
+    };
+    let created_at = Timestamp::from(invoice.creation_date as u64);
+    let expires_at = if invoice.expiry > 0 {
+        Some(Timestamp::from(invoice.creation_date as u64 + invoice.expiry as u64))
+    } else {
+        None
+    };
+    let settled_at = if invoice.settle_date > 0 {
+        Some(Timestamp::from(invoice.settle_date as u64))
+    } else {
+        None
+    };
+
+    PaymentNotification {
+        transaction_type: Some(TransactionType::Incoming),
+        state: Some(TransactionState::Settled),
+        invoice: invoice.payment_request.clone(),
+        description: if invoice.memo.is_empty() {
+            None
+        } else {
+            Some(invoice.memo.clone())
+        },
+        description_hash: if invoice.description_hash.is_empty() {
+            None
+        } else {
+            Some(hex::encode(&invoice.description_hash))
+        },
+        preimage: if invoice.r_preimage.is_empty() {
+            String::new()
+        } else {
+            hex::encode(&invoice.r_preimage)
+        },
+        payment_hash: hex::encode(&invoice.r_hash),
+        amount: amount_msat,
+        fees_paid: 0,
+        created_at,
+        expires_at,
+        settled_at: settled_at.unwrap_or(created_at),
+        metadata: None,
+    }
+}
+
+async fn send_payment_notification(
+    service_keys: &Keys,
+    uri: &NostrWalletConnectURI,
+    notification_type: NotificationType,
+    notification: PaymentNotification,
+) -> Result<(), nwc_types::NwcError> {
+    let nip47_notification = Nip47Notification {
+        notification_type,
+        notification: match notification_type {
+            NotificationType::PaymentSent => NotificationResult::PaymentSent(notification),
+            NotificationType::PaymentReceived => NotificationResult::PaymentReceived(notification),
+            _ => NotificationResult::PaymentSent(notification),
+        },
+    };
+    let content = serde_json::to_string(&nip47_notification)
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+    let encrypted = nip04::encrypt(&uri.secret, &uri.public_key, &content)
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    let client = Client::default();
+    for relay_url in uri.relays.iter() {
+        client.add_relay(relay_url.clone()).await.unwrap();
+    }
+    client.connect().await;
+
+    let event = EventBuilder::new(Kind::WalletConnectNotification, encrypted)
+        .sign_with_keys(service_keys)
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    client
+        .send_event(&event)
+        .await
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+
+    Ok(())
+}
+
+fn invoice_to_lookup_result(
+    invoice: &lnd_grpc_rust::lnrpc::Invoice,
+) -> Result<nwc_types::LookupInvoiceResult, nwc_types::NwcError> {
+    let state = match lnd_grpc_rust::lnrpc::invoice::InvoiceState::from_i32(invoice.state) {
+        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Settled) => Some(TransactionState::Settled),
+        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Canceled) => Some(TransactionState::Failed),
+        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Accepted)
+        | Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Open) => Some(TransactionState::Pending),
+        _ => None,
+    };
+
+    let amount_msat = if invoice.amt_paid_msat > 0 {
+        invoice.amt_paid_msat as u64
+    } else {
+        invoice.value_msat as u64
+    };
+
+    Ok(nwc_types::LookupInvoiceResult {
+        transaction_type: Some(TransactionType::Incoming),
+        state,
+        invoice: if invoice.payment_request.is_empty() {
+            None
+        } else {
+            Some(invoice.payment_request.clone())
+        },
+        description: if invoice.memo.is_empty() {
+            None
+        } else {
+            Some(invoice.memo.clone())
+        },
+        description_hash: if invoice.description_hash.is_empty() {
+            None
+        } else {
+            Some(hex::encode(&invoice.description_hash))
+        },
+        preimage: if invoice.r_preimage.is_empty() {
+            None
+        } else {
+            Some(hex::encode(&invoice.r_preimage))
+        },
+        payment_hash: hex::encode(&invoice.r_hash),
+        amount: amount_msat,
+        fees_paid: 0,
+        created_at: Timestamp::from(invoice.creation_date as u64),
+        expires_at: if invoice.expiry > 0 {
+            Some(Timestamp::from(
+                invoice.creation_date as u64 + invoice.expiry as u64,
+            ))
+        } else {
+            None
+        },
+        settled_at: if invoice.settle_date > 0 {
+            Some(Timestamp::from(invoice.settle_date as u64))
+        } else {
+            None
+        },
+        metadata: None,
     })
 }
 
-async fn run_get_balance() -> nwc_types::NwcResponse {
-    let lnd_balance = lnd::wallet_balance()
-        .await
-        .expect("Could not retrieve balance");
-    nwc_types::NwcResponse::GetBalance(nwc_types::GetBalanceResult {
-        balance: lnd_balance.confirmed_balance,
-    })
+fn spawn_payment_received_notifier(
+    service_keys: Keys,
+    uri: NostrWalletConnectURI,
+    payment_hash: Vec<u8>,
+    payment_request: String,
+) {
+    tokio::spawn(async move {
+        match lnd::wait_for_invoice_settlement(payment_hash).await {
+            Ok(invoice) => {
+                let notification = payment_received_notification(&invoice);
+                if let Err(e) = send_payment_notification(
+                    &service_keys,
+                    &uri,
+                    NotificationType::PaymentReceived,
+                    notification,
+                )
+                .await
+                {
+                    tracing::error!("Failed to send payment_received notification: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to watch invoice {payment_request}: {e}");
+            }
+        }
+    });
+}
+
+fn nanos_to_timestamp(nanos: i64) -> Timestamp {
+    nanos_to_timestamp_opt(nanos).unwrap_or_else(Timestamp::now)
+}
+
+fn nanos_to_timestamp_opt(nanos: i64) -> Option<Timestamp> {
+    if nanos <= 0 {
+        return None;
+    }
+    let secs = nanos as u128 / 1_000_000_000u128;
+    Some(Timestamp::from(secs as u64))
 }

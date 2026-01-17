@@ -6,11 +6,16 @@ use serde_json::Value;
 use serde_json::json;
 
 use nostr_sdk::prelude::*;
+pub use nostr_sdk::nips::nip47::{
+    KeysendTLVRecord, LookupInvoiceRequest, MakeInvoiceRequest, PayInvoiceRequest,
+    PayKeysendRequest, TransactionState, TransactionType,
+};
 
 #[derive(Debug)]
 pub enum NwcError {
     UnknownMethod,
     Json(serde_json::Error),
+    Message(String),
 }
 
 impl std::error::Error for NwcError {}
@@ -26,6 +31,7 @@ impl fmt::Display for NwcError {
         match self {
             Self::UnknownMethod => f.write_str("Unknown method"),
             Self::Json(e) => e.fmt(f),
+            Self::Message(msg) => f.write_str(msg),
         }
     }
 }
@@ -35,6 +41,10 @@ impl fmt::Display for NwcError {
 pub enum NwcRequest {
     GetInfo(GetInfoRequest),
     GetBalance(GetBalanceRequest),
+    PayInvoice(PayInvoiceRequest),
+    PayKeysend(PayKeysendRequest),
+    MakeInvoice(MakeInvoiceRequest),
+    LookupInvoice(LookupInvoiceRequest),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,6 +63,22 @@ impl NwcRequest {
         match request.method {
             Method::GetInfo => Ok(Self::GetInfo(GetInfoRequest {})),
             Method::GetBalance => Ok(Self::GetBalance(GetBalanceRequest {})),
+            Method::PayInvoice => {
+                let params: PayInvoiceRequest = serde_json::from_value(request.params)?;
+                Ok(Self::PayInvoice(params))
+            }
+            Method::PayKeysend => {
+                let params: PayKeysendRequest = serde_json::from_value(request.params)?;
+                Ok(Self::PayKeysend(params))
+            }
+            Method::MakeInvoice => {
+                let params: MakeInvoiceRequest = serde_json::from_value(request.params)?;
+                Ok(Self::MakeInvoice(params))
+            }
+            Method::LookupInvoice => {
+                let params: LookupInvoiceRequest = serde_json::from_value(request.params)?;
+                Ok(Self::LookupInvoice(params))
+            }
             _ => Err(NwcError::UnknownMethod),
         }
     }
@@ -67,6 +93,10 @@ pub struct GetBalanceRequest {}
 pub enum NwcResponse {
     GetInfo(GetInfoResult),
     GetBalance(GetBalanceResult),
+    PayInvoice(PayInvoiceResult),
+    PayKeysend(PayKeysendResult),
+    MakeInvoice(MakeInvoiceResult),
+    LookupInvoice(LookupInvoiceResult),
 }
 
 impl NwcResponse {
@@ -79,19 +109,38 @@ impl NwcResponse {
         match self {
             Self::GetInfo(p) => p.result_type(),
             Self::GetBalance(p) => p.result_type(),
+            Self::PayInvoice(p) => p.result_type(),
+            Self::PayKeysend(p) => p.result_type(),
+            Self::MakeInvoice(p) => p.result_type(),
+            Self::LookupInvoice(p) => p.result_type(),
         }
     }
 
     pub fn default_responses() -> Vec<NwcResponse> {
         let info = GetInfoResult::default();
         let balance = GetBalanceResult::default();
-        vec![NwcResponse::GetInfo(info), NwcResponse::GetBalance(balance)]
+        let pay_invoice = PayInvoiceResult::default();
+        let pay_keysend = PayKeysendResult::default();
+        let make_invoice = MakeInvoiceResult::default();
+        let lookup_invoice = LookupInvoiceResult::default();
+        vec![
+            NwcResponse::GetInfo(info),
+            NwcResponse::GetBalance(balance),
+            NwcResponse::PayInvoice(pay_invoice),
+            NwcResponse::PayKeysend(pay_keysend),
+            NwcResponse::MakeInvoice(make_invoice),
+            NwcResponse::LookupInvoice(lookup_invoice),
+        ]
     }
 
     fn to_content(&self) -> Value {
         match self {
             Self::GetInfo(result) => result.to_content(),
             Self::GetBalance(result) => result.to_content(),
+            Self::PayInvoice(result) => result.to_content(),
+            Self::PayKeysend(result) => result.to_content(),
+            Self::MakeInvoice(result) => result.to_content(),
+            Self::LookupInvoice(result) => result.to_content(),
         }
     }
 }
@@ -133,5 +182,150 @@ impl GetBalanceResult {
 
     fn to_content(&self) -> Value {
         json!({"result_type": self.result_type(), "result": json!({ "balance": self.balance })})
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PayInvoiceResult {
+    pub preimage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fees_paid: Option<u64>,
+}
+
+impl PayInvoiceResult {
+    pub fn default() -> Self {
+        Self {
+            preimage: "".to_string(),
+            fees_paid: None,
+        }
+    }
+
+    fn result_type(&self) -> &'static str {
+        "pay_invoice"
+    }
+
+    fn to_content(&self) -> Value {
+        json!({"result_type": self.result_type(), "result": self})
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PayKeysendResult {
+    pub preimage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fees_paid: Option<u64>,
+}
+
+impl PayKeysendResult {
+    pub fn default() -> Self {
+        Self {
+            preimage: "".to_string(),
+            fees_paid: None,
+        }
+    }
+
+    fn result_type(&self) -> &'static str {
+        "pay_keysend"
+    }
+
+    fn to_content(&self) -> Value {
+        json!({"result_type": self.result_type(), "result": self})
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MakeInvoiceResult {
+    pub invoice: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preimage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
+}
+
+impl MakeInvoiceResult {
+    pub fn default() -> Self {
+        Self {
+            invoice: "".to_string(),
+            payment_hash: None,
+            description: None,
+            description_hash: None,
+            preimage: None,
+            amount: None,
+            created_at: None,
+            expires_at: None,
+        }
+    }
+
+    fn result_type(&self) -> &'static str {
+        "make_invoice"
+    }
+
+    fn to_content(&self) -> Value {
+        json!({"result_type": self.result_type(), "result": self})
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LookupInvoiceResult {
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_type: Option<TransactionType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<TransactionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invoice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preimage: Option<String>,
+    pub payment_hash: String,
+    pub amount: u64,
+    pub fees_paid: u64,
+    pub created_at: Timestamp,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+impl LookupInvoiceResult {
+    pub fn default() -> Self {
+        Self {
+            transaction_type: None,
+            state: None,
+            invoice: None,
+            description: None,
+            description_hash: None,
+            preimage: None,
+            payment_hash: "".to_string(),
+            amount: 0,
+            fees_paid: 0,
+            created_at: Timestamp::now(),
+            expires_at: None,
+            settled_at: None,
+            metadata: None,
+        }
+    }
+
+    fn result_type(&self) -> &'static str {
+        "lookup_invoice"
+    }
+
+    fn to_content(&self) -> Value {
+        json!({"result_type": self.result_type(), "result": self})
     }
 }
