@@ -58,8 +58,23 @@ pub async fn start_deamon(service_keys: Keys, pid_file: &PathBuf) -> Result<()> 
     tracing::info!("Starting deamon");
 
     post_info_to_all_servers(&service_keys, &cfg).await;
-    if let Err(e) = handle_all_uri_events(&service_keys, &cfg).await {
-        tracing::error!("Error while handling URI events: {e}");
+    tokio::select! {
+        result = handle_all_uri_events(&service_keys, &cfg) => {
+            if let Err(e) = result {
+                tracing::error!("Error while handling URI events: {e}");
+            }
+        }
+        _ = wait_for_shutdown() => {
+            tracing::info!("Shutdown signal received, exiting daemon.");
+        }
+    }
+
+    if !pid_file.as_os_str().is_empty() {
+        if let Err(e) = fs::remove_file(&pid_file) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::error!("Failed to remove pid file {:?}: {e}", pid_file);
+            }
+        }
     }
 
     Ok(())
@@ -188,6 +203,40 @@ impl fmt::Display for Error {
         match self {
             Self::NwcError(e) => e.fmt(f),
             Self::ClientError(e) => e.fmt(f),
+        }
+    }
+}
+
+async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to register SIGTERM handler: {e}");
+                return;
+            }
+        };
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to register SIGINT handler: {e}");
+                return;
+            }
+        };
+
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = signal::ctrl_c().await {
+            tracing::error!("Failed to listen for shutdown signal: {e}");
         }
     }
 }
@@ -337,8 +386,6 @@ async fn handler(
             tracing::error!("Incorrect subscription ID {subscription_id} vs {uri_ids:?}");
         }
     }
-
-    tracing::info!("Return true");
 }
 
 async fn handle_nwc_request(
