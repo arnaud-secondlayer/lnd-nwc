@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 mod config;
 mod lnd;
@@ -19,7 +20,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Daemon,
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     Lnd {
         #[command(subcommand)]
         action: LndAction,
@@ -27,6 +31,22 @@ enum Commands {
     Uri {
         #[command(subcommand)]
         action: UriAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    Start {
+        #[arg(short = 'p', long)]
+        pid_file: String,
+    },
+    Stop {
+        #[arg(short = 'p', long)]
+        pid_file: String,
+    },
+    Status {
+        #[arg(short = 'p', long)]
+        pid_file: String,
     },
 }
 
@@ -85,10 +105,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } => lnd_config::store(&cert, &macaroon, &uri),
             LndAction::Info => lnd::display_info().await,
         },
-        Commands::Daemon => {
-            let keys = nostr_config::load_or_generate_keys().expect("Could not retrieve keys");
-            let _ = nostr::start_deamon(keys).await;
-        }
+        Commands::Daemon { action } => match action {
+            DaemonAction::Start { pid_file } => {
+                let _ = nostr::start_deamon(
+                    nostr_config::load_or_generate_keys().expect("Could not retrieve keys"),
+                    &PathBuf::from(pid_file),
+                )
+                .await;
+            }
+            DaemonAction::Stop { pid_file } => {
+                let _ = nostr::stop_deamon(&PathBuf::from(pid_file));
+            }
+            DaemonAction::Status { pid_file } => {
+                let pb = &PathBuf::from(pid_file);
+                let _ = nostr::status_deamon(pb);
+            }
+        },
     }
 
     Ok(())

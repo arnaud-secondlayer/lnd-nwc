@@ -1,5 +1,11 @@
 use core::fmt;
 use std::collections::HashSet;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process;
+
+use libc;
 
 use futures::future::join_all;
 use nostr_sdk::nips::nip47::{
@@ -12,14 +18,158 @@ use crate::config::{Config, load_config};
 use crate::lnd;
 use crate::nwc_types;
 
-pub async fn start_deamon(service_keys: Keys) -> Result<()> {
+pub async fn start_deamon(service_keys: Keys, pid_file: &PathBuf) -> Result<()> {
     let cfg = load_config();
+
+    // Block if already running (pid file exists)
+    if !pid_file.as_os_str().is_empty() && Path::new(&pid_file).exists() {
+        tracing::error!(
+            "Daemon already appears to be running (pid file exists at {:?}).",
+            pid_file
+        );
+        return Ok(());
+    }
+
+    // Store current process id
+    if !pid_file.as_os_str().is_empty() {
+        if let Some(parent) = pid_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        // Create new pid file atomically (fail if it already exists)
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pid_file)
+        {
+            Ok(mut f) => {
+                let pid = process::id();
+                let _ = writeln!(f, "{pid}");
+            }
+            Err(e) => {
+                tracing::error!("Could not create pid file {:?}: {e}", pid_file);
+                return Ok(());
+            }
+        }
+    } else {
+        tracing::error!("Warning: pid_file is not configured; daemon start will not write a pid file.");
+    }
 
     tracing::info!("Starting deamon");
 
     post_info_to_all_servers(&service_keys, &cfg).await;
     if let Err(e) = handle_all_uri_events(&service_keys, &cfg).await {
         tracing::error!("Error while handling URI events: {e}");
+    }
+
+    Ok(())
+}
+
+pub fn stop_deamon(pid_file: &PathBuf) -> Result<()> {
+    tracing::info!("Stopping deamon");
+
+    if pid_file.as_os_str().is_empty() {
+        eprintln!("pid_file is not configured; cannot stop daemon.");
+        return Ok(());
+    }
+
+    if !Path::new(&pid_file).exists() {
+        eprintln!(
+            "Daemon is not running (pid file {:?} does not exist).",
+            pid_file
+        );
+        return Ok(());
+    }
+
+    let pid_str = match fs::read_to_string(&pid_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Could not read pid file {:?}: {e}", pid_file);
+            return Ok(());
+        }
+    };
+
+    let pid: i32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Invalid pid file contents {:?}: {e}", pid_file);
+            return Ok(());
+        }
+    };
+
+    // Send SIGTERM to the process
+    let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("Failed to stop daemon (pid {pid}): {err}");
+
+        // If the process doesn't exist anymore, treat pid file as stale and remove it.
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            let _ = fs::remove_file(&pid_file);
+        }
+
+        return Ok(());
+    }
+
+    // Remove pid file after signalling
+    if let Err(e) = fs::remove_file(&pid_file) {
+        eprintln!(
+            "Stopped daemon (pid {pid}) but failed to remove pid file {:?}: {e}",
+            pid_file
+        );
+        return Ok(());
+    }
+
+    println!("Stopped daemon (pid {pid}).");
+    Ok(())
+}
+
+pub fn status_deamon(pid_file: &PathBuf) -> Result<()> {
+    if pid_file.as_os_str().is_empty() {
+        tracing::error!("Status: unknown (pid_file is not configured).");
+        return Ok(());
+    }
+
+    if !Path::new(&pid_file).exists() {
+        tracing::error!("Status: stopped (no pid file at {:?}).", pid_file);
+        return Ok(());
+    }
+
+    let mut pid_str = String::new();
+    match fs::File::open(&pid_file).and_then(|mut f| f.read_to_string(&mut pid_str)) {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(
+                "Status: unknown (could not read pid file {:?}: {e}).",
+                pid_file
+            );
+            return Ok(());
+        }
+    }
+
+    let pid: i32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Status: unknown (invalid pid in {:?}: {e}).", pid_file);
+            return Ok(());
+        }
+    };
+
+    // Check whether the PID exists (signal 0 doesn't send a signal)
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        tracing::info!("Status: running (pid {pid}).");
+        return Ok(());
+    }
+
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        tracing::error!(
+            "Status: stale pid file (pid {pid} not running). Remove {:?} if needed.",
+            pid_file
+        );
+    } else {
+        tracing::error!("Status: unknown (pid {pid} check failed: {err}).");
     }
 
     Ok(())
@@ -343,17 +493,11 @@ async fn run_pay_keysend(
     Ok(nwc_types::NwcResponse::PayKeysend(
         nwc_types::PayKeysendResult {
             preimage: if payment.payment_preimage.is_empty() {
-                request
-                    .preimage
-                    .clone()
-                    .unwrap_or_else(|| "".to_string())
+                request.preimage.clone().unwrap_or_else(|| "".to_string())
             } else {
                 payment.payment_preimage.clone()
             },
-            fees_paid: payment
-                .fee_msat
-                .try_into()
-                .ok(),
+            fees_paid: payment.fee_msat.try_into().ok(),
         },
     ))
 }
@@ -404,12 +548,9 @@ async fn run_lookup_invoice(
     uri: &NostrWalletConnectURI,
     request: &nwc_types::LookupInvoiceRequest,
 ) -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
-    let invoice = lnd::lookup_invoice(
-        request.payment_hash.as_deref(),
-        request.invoice.as_deref(),
-    )
-    .await
-    .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
+    let invoice = lnd::lookup_invoice(request.payment_hash.as_deref(), request.invoice.as_deref())
+        .await
+        .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
 
     let result = invoice_to_lookup_result(&invoice)?;
 
@@ -473,7 +614,9 @@ fn payment_received_notification(invoice: &lnd_grpc_rust::lnrpc::Invoice) -> Pay
     };
     let created_at = Timestamp::from(invoice.creation_date as u64);
     let expires_at = if invoice.expiry > 0 {
-        Some(Timestamp::from(invoice.creation_date as u64 + invoice.expiry as u64))
+        Some(Timestamp::from(
+            invoice.creation_date as u64 + invoice.expiry as u64,
+        ))
     } else {
         None
     };
@@ -553,10 +696,16 @@ fn invoice_to_lookup_result(
     invoice: &lnd_grpc_rust::lnrpc::Invoice,
 ) -> Result<nwc_types::LookupInvoiceResult, nwc_types::NwcError> {
     let state = match lnd_grpc_rust::lnrpc::invoice::InvoiceState::from_i32(invoice.state) {
-        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Settled) => Some(TransactionState::Settled),
-        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Canceled) => Some(TransactionState::Failed),
+        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Settled) => {
+            Some(TransactionState::Settled)
+        }
+        Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Canceled) => {
+            Some(TransactionState::Failed)
+        }
         Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Accepted)
-        | Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Open) => Some(TransactionState::Pending),
+        | Some(lnd_grpc_rust::lnrpc::invoice::InvoiceState::Open) => {
+            Some(TransactionState::Pending)
+        }
         _ => None,
     };
 
