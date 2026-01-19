@@ -350,6 +350,7 @@ async fn handler(
         tracing::info!(
             "Received event of kind {} at {} : {} : {}",
             event.kind,
+            event.created_at,
             event.pubkey,
             event.content
         );
