@@ -348,7 +348,7 @@ async fn handler(
     } = notification
     {
         tracing::info!(
-            "Received event of kind {} : {} : {}",
+            "Received event of kind {} at {} : {} : {}",
             event.kind,
             event.pubkey,
             event.content
@@ -373,7 +373,7 @@ async fn handler(
 
             let request = nwc_types::NwcRequest::from_value(&msg.unwrap());
             if let Err(e) = request {
-                tracing::error!("Impossible to decrypt direct message {e}");
+                tracing::error!("Impossible to retrieve the request {e}");
                 return;
             }
 
@@ -456,12 +456,12 @@ async fn run_get_info() -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
 }
 
 async fn run_get_balance() -> Result<nwc_types::NwcResponse, nwc_types::NwcError> {
-    let lnd_balance = lnd::wallet_balance()
+    let lnd_balance = lnd::channel_balance()
         .await
         .map_err(|e| nwc_types::NwcError::Message(e.to_string()))?;
     Ok(nwc_types::NwcResponse::GetBalance(
         nwc_types::GetBalanceResult {
-            balance: lnd_balance.confirmed_balance * 1000,
+            balance: lnd_balance.local_balance.map_or(0, |balance| balance.msat.cast_signed()),
         },
     ))
 }

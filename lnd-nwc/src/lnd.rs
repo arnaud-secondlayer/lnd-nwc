@@ -3,7 +3,7 @@ use lnd_grpc_rust::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use lnd_grpc_rust::invoicesrpc::{LookupInvoiceMsg, SubscribeSingleInvoiceRequest};
 use lnd_grpc_rust::lnrpc::{self, invoice::InvoiceState, payment::PaymentStatus};
 use lnd_grpc_rust::routerrpc;
-use secp256k1::rand::{rngs::OsRng, RngCore};
+use secp256k1::rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -32,15 +32,12 @@ async fn get_info() -> LndResult<lnd_grpc_rust::lnrpc::GetInfoResponse> {
     Ok(info)
 }
 
-pub(crate) async fn wallet_balance() -> LndResult<lnd_grpc_rust::lnrpc::WalletBalanceResponse> {
+pub(crate) async fn channel_balance() -> LndResult<lnd_grpc_rust::lnrpc::ChannelBalanceResponse> {
     let mut client = connect_to_lnd().await?;
 
     let info = client
         .lightning()
-        .wallet_balance(lnd_grpc_rust::lnrpc::WalletBalanceRequest {
-            account: "default".to_string(),
-            min_confs: 0,
-        })
+        .channel_balance(lnd_grpc_rust::lnrpc::ChannelBalanceRequest {})
         .await
         .expect("failed to get balance")
         .into_inner();
@@ -79,7 +76,9 @@ pub(crate) async fn pay_keysend(
 ) -> LndResult<lnrpc::Payment> {
     let dest = hex::decode(pubkey).map_err(map_to_other)?;
     if dest.len() != 33 {
-        return Err(Box::new(map_to_other("Destination pubkey must be 33 bytes")));
+        return Err(Box::new(map_to_other(
+            "Destination pubkey must be 33 bytes",
+        )));
     }
 
     let payment_preimage = match preimage {
@@ -121,9 +120,7 @@ pub(crate) async fn pay_keysend(
     execute_payment(request).await
 }
 
-async fn execute_payment(
-    request: routerrpc::SendPaymentRequest,
-) -> LndResult<lnrpc::Payment> {
+async fn execute_payment(request: routerrpc::SendPaymentRequest) -> LndResult<lnrpc::Payment> {
     let mut client = connect_to_lnd().await?;
     let mut stream = client.router().send_payment_v2(request).await?.into_inner();
 
@@ -134,7 +131,7 @@ async fn execute_payment(
                 return Err(Box::new(map_to_other(format!(
                     "Payment failed with reason {:?}",
                     payment.failure_reason
-                ))))
+                ))));
             }
             _ => continue,
         }
@@ -221,9 +218,7 @@ pub(crate) async fn wait_for_invoice_settlement(
     while let Some(invoice) = stream.message().await? {
         match InvoiceState::from_i32(invoice.state) {
             Some(InvoiceState::Settled) => return Ok(invoice),
-            Some(InvoiceState::Canceled) => {
-                return Err(Box::new(map_to_other("Invoice canceled")))
-            }
+            Some(InvoiceState::Canceled) => return Err(Box::new(map_to_other("Invoice canceled"))),
             _ => continue,
         }
     }
@@ -273,8 +268,6 @@ fn buffer_as_hex(bytes: Vec<u8>) -> String {
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
 }
-
-
 
 /*
 NIP-47 to LND gRPC Mapping
