@@ -386,7 +386,7 @@ async fn handler(
                 tracing::error!("Error while handling the request {} for {}", e, nwc_uri);
             }
         } else {
-            tracing::error!("Incorrect subscription ID {} vs {:?} for {}", subscription_id, uri_ids, nwc_uri);
+            tracing::error!("Incorrect subscription ID {} vs {:?}", subscription_id, uri_ids);
         }
     }
 }
