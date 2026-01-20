@@ -365,26 +365,28 @@ async fn handler(
             .filter(|(_, opt_id)| opt_id.as_ref() == Some(&subscription_id))
             .next();
 
+        tracing::info!("uri_id: {:?}", uri_id);
+
         if let Some(nwc_uri) = uri_id.map(|(uri, _)| uri) {
             let msg = nip04::decrypt(&nwc_uri.secret, &nwc_uri.public_key, &event.content);
             if let Err(e) = msg {
-                tracing::error!("Impossible to decrypt direct message: {e}");
+                tracing::error!("Impossible to decrypt direct message: {} for {}", e, nwc_uri);
                 return;
             }
 
             let request = nwc_types::NwcRequest::from_value(&msg.unwrap());
             if let Err(e) = request {
-                tracing::error!("Impossible to retrieve the request {e}");
+                tracing::error!("Impossible to retrieve the request {} for {}", e, nwc_uri);
                 return;
             }
 
             let result =
                 handle_nwc_request(service_keys, &event.id, &request.unwrap(), &nwc_uri).await;
             if let Err(ref e) = result {
-                tracing::error!("Error while handling the request {e:?}");
+                tracing::error!("Error while handling the request {} for {}", e, nwc_uri);
             }
         } else {
-            tracing::error!("Incorrect subscription ID {subscription_id} vs {uri_ids:?}");
+            tracing::error!("Incorrect subscription ID {} vs {:?} for {}", subscription_id, uri_ids, nwc_uri);
         }
     }
 }
